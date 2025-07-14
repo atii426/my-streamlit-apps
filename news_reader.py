@@ -1,7 +1,7 @@
 ﻿import streamlit as st
 import feedparser
-from newspaper import Article
 import re
+import trafilatura # ★追加: trafilaturaをインポート
 
 # -----------------------------
 # RSSカテゴリ辞書
@@ -25,6 +25,8 @@ def simple_summary(text, max_sentences=3):
     """
     与えられたテキストを簡易的に要約します。
     """
+    if not text:
+        return "⚠️ 要約できるテキストがありません。"
     sentences = re.split(r'(?<=[。！？])\s*', text)
     return " ".join(sentences[:max_sentences])
 
@@ -38,7 +40,6 @@ def fetch_news(rss_url):
     """
     try:
         feed = feedparser.parse(rss_url)
-        # bozoが1の場合はパースエラーがあることを示す
         if feed.bozo:
             print(f"RSSフィードのパースエラー: {feed.bozo_exception}")
             return []
@@ -69,18 +70,36 @@ for i, (category, rss_url) in enumerate(CATEGORIES.items()):
             continue
 
         for entry in entries:
+            article_text = ""
+            image_url = ""
             try:
-                # newspaper3kで記事の詳細を解析
-                article = Article(entry.link, language='ja')
-                article.download()
-                article.parse()
-                summary = simple_summary(article.text)
-                image_url = article.top_image
+                # ★trafilaturaを使って記事の詳細を解析★
+                downloaded = trafilatura.fetch_url(entry.link)
+                if downloaded:
+                    # 記事の本文を抽出
+                    article_text = trafilatura.extract(downloaded, include_images=True, include_links=False)
+                    # 画像URLはtrafilaturaでは直接取得しにくいので、RSSのenclosuresから試みる
+                    if hasattr(entry, 'enclosures') and entry.enclosures:
+                        for enc in entry.enclosures:
+                            if 'image' in enc.type:
+                                image_url = enc.href
+                                break
+                    # もしenclosuresになければ、記事本文から最初の画像を探す（簡易的）
+                    if not image_url and article_text:
+                        # ここはtrafilaturaの機能ではなく、簡易的な正規表現などになるため、
+                        # 確実性はありません。必要であれば、より高度なHTMLパースが必要です。
+                        # 例: <img src="(.*?)"
+                        pass # 今回は省略し、enclosuresを優先
+
             except Exception as e:
-                # 記事の解析に失敗した場合のフォールバック
                 print(f"記事の解析に失敗しました ({entry.link}): {e}")
+                article_text = "" # エラー時はテキストを空にする
+                image_url = ""
+
+            summary = simple_summary(article_text)
+            if not summary or summary == "⚠️ 要約できるテキストがありません。":
                 summary = "⚠️ 要約できませんでした。記事リンクから直接お読みください。"
-                image_url = "" # 画像も取得できない場合は空にする
+
 
             with st.expander(entry.title):
                 cols = st.columns([1, 3])

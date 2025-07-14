@@ -1,4 +1,3 @@
 streamlit
 feedparser
-newspaper3k
-lxml
+trafilatura  # ★newspaper3k の代わりにこれを使う★
