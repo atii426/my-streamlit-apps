@@ -1,71 +1,117 @@
 ﻿import streamlit as st
 import feedparser
 import re
-import trafilatura
-import requests
-from datetime import datetime
+import trafilatura # ★追加: trafilaturaをインポート
 
-# --- ここまであなたのニュースコード（CATEGORIES辞書など） ---
+# -----------------------------
+# RSSカテゴリ辞書
+# -----------------------------
+CATEGORIES = {
+    "トップ": "https://news.yahoo.co.jp/rss/topics/top-picks.xml",
+    "国内": "https://news.yahoo.co.jp/rss/topics/domestic.xml",
+    "国際": "https://news.yahoo.co.jp/rss/topics/world.xml",
+    "経済": "https://news.yahoo.co.jp/rss/topics/business.xml",
+    "IT・科学": "https://news.yahoo.co.jp/rss/topics/it.xml",
+    "スポーツ": "https://news.yahoo.co.jp/rss/topics/sports.xml",
+    "エンタメ": "https://news.yahoo.co.jp/rss/topics/entertainment.xml",
+    "地域": "https://news.yahoo.co.jp/rss/topics/local.xml",
+    "主要": "https://news.yahoo.co.jp/rss/topics/main.xml",
+}
 
-# 天気表示用関数
-def show_weather():
-    cities = {
-        "東京 (Tokyo)": "Tokyo",
-        "大阪 (Osaka)": "Osaka",
-        "札幌 (Sapporo)": "Sapporo",
-        "福岡 (Fukuoka)": "Fukuoka",
-        "名古屋 (Nagoya)": "Nagoya",
-        "京都 (Kyoto)": "Kyoto",
-        "仙台 (Sendai)": "Sendai",
-        "広島 (Hiroshima)": "Hiroshima",
-        "高松 (Takamatsu)": "Takamatsu"
-    }
+# -----------------------------
+# 要約（簡易）関数
+# -----------------------------
+def simple_summary(text, max_sentences=3):
+    """
+    与えられたテキストを簡易的に要約します。
+    """
+    if not text:
+        return "⚠️ 要約できるテキストがありません。"
+    sentences = re.split(r'(?<=[。！？])\s*', text)
+    return " ".join(sentences[:max_sentences])
 
-    st.subheader("🌤 天気予報")
-    city_name = st.selectbox("都市を選択してください", list(cities.keys()))
-    city_query = cities[city_name]
+# -----------------------------
+# ニュース取得
+# -----------------------------
+@st.cache_data(ttl=1800) # 30分キャッシュ
+def fetch_news(rss_url):
+    """
+    指定されたRSSフィードからニュースを取得します。
+    """
+    try:
+        feed = feedparser.parse(rss_url)
+        if feed.bozo:
+            print(f"RSSフィードのパースエラー: {feed.bozo_exception}")
+            return []
+        return feed.entries[:10] # 最新の10件を取得
+    except Exception as e:
+        print(f"ニュースの取得中にエラーが発生しました: {e}")
+        return []
 
-    API_KEY = "e58c5125dd084212ab081525250807"
-
-    if st.button("天気を取得"):
-        url = f"http://api.weatherapi.com/v1/forecast.json?key={API_KEY}&q={city_query}&days=7&lang=ja"
-        response = requests.get(url)
-        if response.status_code == 200:
-            data = response.json()
-            location = data["location"]["name"]
-            st.markdown(f"### {location}の7日間の天気予報")
-            forecast_days = data["forecast"]["forecastday"]
-            for day in forecast_days:
-                date = datetime.strptime(day["date"], "%Y-%m-%d").strftime("%m/%d (%a)")
-                condition = day["day"]["condition"]["text"]
-                icon_url = "https:" + day["day"]["condition"]["icon"]
-                max_temp = day["day"]["maxtemp_c"]
-                min_temp = day["day"]["mintemp_c"]
-                st.markdown(f"#### {date}")
-                st.image(icon_url, width=64)
-                st.write(f"天気: {condition}")
-                st.write(f"最高気温: {max_temp}℃  最低気温: {min_temp}℃")
-                st.markdown("---")
-        else:
-            st.error("天気情報の取得に失敗しました。")
-
-# --- ページ設定、ニュース表示は元のまま ---
-
+# -----------------------------
+# ページ設定
+# -----------------------------
 st.set_page_config(page_title="今日のニュースまとめ", layout="wide")
 st.title("📰 今日のニュースまとめ")
 st.markdown("Yahooニュースをカテゴリごとに表示し、要約と画像をつけて紹介します。")
 
-# --- 天気を見るボタン ---
-if st.button("🌤 天気を見る"):
-    show_weather()
-
-# --- 既存のニュースタブ表示コード（省略せず入れてください） ---
+# -----------------------------
+# タブ
+# -----------------------------
 tabs = st.tabs(list(CATEGORIES.keys()))
+
 for i, (category, rss_url) in enumerate(CATEGORIES.items()):
     with tabs[i]:
         st.subheader(f"📂 {category}カテゴリのニュース")
         entries = fetch_news(rss_url)
-        # (ニュース表示のコードをここに入れる)
+
+        if not entries:
+            st.warning("⚠️ ニュースの取得に失敗しました。RSSフィードを確認してください。")
+            continue
+
+        for entry in entries:
+            article_text = ""
+            image_url = ""
+            try:
+                # ★trafilaturaを使って記事の詳細を解析★
+                downloaded = trafilatura.fetch_url(entry.link)
+                if downloaded:
+                    # 記事の本文を抽出
+                    article_text = trafilatura.extract(downloaded, include_images=True, include_links=False)
+                    # 画像URLはtrafilaturaでは直接取得しにくいので、RSSのenclosuresから試みる
+                    if hasattr(entry, 'enclosures') and entry.enclosures:
+                        for enc in entry.enclosures:
+                            if 'image' in enc.type:
+                                image_url = enc.href
+                                break
+                    # もしenclosuresになければ、記事本文から最初の画像を探す（簡易的）
+                    if not image_url and article_text:
+                        # ここはtrafilaturaの機能ではなく、簡易的な正規表現などになるため、
+                        # 確実性はありません。必要であれば、より高度なHTMLパースが必要です。
+                        # 例: <img src="(.*?)"
+                        pass # 今回は省略し、enclosuresを優先
+
+            except Exception as e:
+                print(f"記事の解析に失敗しました ({entry.link}): {e}")
+                article_text = "" # エラー時はテキストを空にする
+                image_url = ""
+
+            summary = simple_summary(article_text)
+            if not summary or summary == "⚠️ 要約できるテキストがありません。":
+                summary = "⚠️ 要約できませんでした。記事リンクから直接お読みください。"
+
+
+            with st.expander(entry.title):
+                cols = st.columns([1, 3])
+                with cols[0]:
+                    if image_url:
+                        st.image(image_url, use_container_width=True, caption="記事画像")
+                    else:
+                        st.markdown("（画像なし）")
+                with cols[1]:
+                    st.markdown(f"🔗 [記事を読む]({entry.link})", unsafe_allow_html=True)
+                    st.markdown("📝 **要約**")
+                    st.write(summary)
 
 st.markdown("---")
 st.info("このニュースリーダーは、Streamlitで構築されています。")
